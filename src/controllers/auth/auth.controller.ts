@@ -1,12 +1,18 @@
 import type { NextFunction, Request, Response } from "express";
 import { AppError } from "../../lib/appError.js";
 import { User } from "../../models/user.model.js";
-import { loginSchema, logoutSchema, registerSchema } from "./auth.schema.js";
+import {
+  forgotPasswordSchema,
+  loginSchema,
+  registerSchema,
+  resetPasswordSchema,
+} from "./auth.schema.js";
 import z from "zod";
 import jwt from "jsonwebtoken";
 import { sendEmail } from "../../lib/email.js";
 import { catchAyncError } from "../../lib/catchAsyncError.js";
 import { createTokens, verifyRefreshToken } from "../../lib/token.js";
+import crypto from "crypto";
 
 function getAppUrl() {
   return process.env.APP_URL || `http://localhost:${process.env.PORT}`;
@@ -78,6 +84,7 @@ export const registerHandler = catchAyncError(async function (
         role: newUser.role,
         isEmailVerfied: newUser.isEmailVerfied,
       },
+      accessToken: tokens.accessToken,
     },
   });
 });
@@ -134,7 +141,7 @@ export const loginHandler = catchAyncError(async function (
     email: normalizedEmail,
   }).select("+password");
 
-  if (!user || !(await (user as any).correctPassword(password))) {
+  if (!user || !(await user.correctPassword(password))) {
     return next(new AppError("invalid credentials", 400));
   }
 
@@ -283,12 +290,12 @@ export const logoutHandler = function (req: Request, res: Response) {
   });
 };
 
-export const forgotPassword = catchAyncError(async function (
+export const forgotPasswordHandler = catchAyncError(async function (
   req: Request,
   res: Response,
   next: NextFunction,
 ) {
-  const result = logoutSchema.safeParse(req.body);
+  const result = forgotPasswordSchema.safeParse(req.body);
 
   if (!result.success) {
     return next(
@@ -305,12 +312,12 @@ export const forgotPassword = catchAyncError(async function (
     return next(new AppError("there is no user with email address", 404));
   }
 
-  const resetToken = (user as any).createPasswordResetToken();
+  const resetToken = user.createPasswordResetToken();
 
   await user.save({ validateBeforeSave: false });
 
   try {
-    const resetUrl = `${getAppUrl()}/auth/reset-password?token?token=${resetToken}`;
+    const resetUrl = `${getAppUrl()}/auth/reset-password?token=${resetToken}`;
 
     await sendEmail(
       user.email,
@@ -323,8 +330,8 @@ export const forgotPassword = catchAyncError(async function (
       message: "Reset link sent to email",
     });
   } catch (error) {
-    user.resetPasswordToken = null;
-    user.resetPasswordExpires = null;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
 
     await user.save({ validateBeforeSave: false });
 
@@ -337,4 +344,51 @@ export const forgotPassword = catchAyncError(async function (
   }
 });
 
-export const resetPassword = catchAyncError(async function () {});
+export const resetPasswordHandler = catchAyncError(async function (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const resetToken = req.query.token as string;
+  if (!resetToken) {
+    return next(new AppError("Reset token is missing", 400));
+  }
+  const result = resetPasswordSchema.safeParse(req.body);
+  if (!result.success) {
+    return next(
+      new AppError("Invalid data!", 400, z.prettifyError(result.error)),
+    );
+  }
+
+  const { password } = result.data;
+  const hashedToken = crypto
+    .createHash("sha256")
+    .update(resetToken)
+    .digest("hex");
+
+  const user = await User.findOne({
+    resetPasswordToken: hashedToken,
+    resetPasswordExpires: { $gt: Date.now() },
+  }).select("+password");
+
+  if (!user) {
+    return next(new AppError("Token is invalid or has expired", 400));
+  }
+
+  if (await user.correctPassword(password)) {
+    return next(
+      new AppError("New password can not be same as old password", 400),
+    );
+  }
+
+  user.password = password;
+  user.resetPasswordToken = undefined;
+  user.resetPasswordExpires = undefined;
+  user.tokenVersion = user.tokenVersion + 1;
+  await user.save();
+
+  return res.status(200).json({
+    status: "success",
+    message: "Password reset successfully",
+  });
+});

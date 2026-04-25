@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
 import crypto from "crypto";
+import type { IUser, IUserDocument } from "../interfaces/user.interface.js";
 
 const userSchema = new mongoose.Schema(
   {
@@ -43,7 +44,7 @@ const userSchema = new mongoose.Schema(
       default: 0,
     },
     passwordChangedAt: {
-      type: String,
+      type: Date,
       default: undefined,
     },
     resetPasswordToken: {
@@ -62,7 +63,6 @@ userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
 
   this.password = await bcrypt.hash(this.password, 11);
-  console.log("pass", this.password);
   next();
 });
 
@@ -82,4 +82,5 @@ userSchema.methods.createPasswordResetToken = function () {
 
   return resetToken;
 };
-export const User = mongoose.model("User", userSchema);
+
+export const User = mongoose.model<IUserDocument>("User", userSchema);
