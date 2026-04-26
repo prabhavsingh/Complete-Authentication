@@ -1,6 +1,8 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import authRouter from "./routes/auth.routes.js";
+import userRouter from "./routes/user.routes.js";
+import adminRouter from "./routes/admin.routes.js";
 import { globalErrorHandler } from "./lib/globalErrorHandler.js";
 
 const app = express();
@@ -13,6 +15,8 @@ app.get("/health", (req, res) => {
 });
 
 app.use("/auth", authRouter);
+app.use("/user", userRouter);
+app.use("/admin", adminRouter);
 
 app.use((req, res) => {
   res.status(404).json({

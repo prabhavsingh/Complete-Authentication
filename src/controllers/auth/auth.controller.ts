@@ -13,9 +13,26 @@ import { sendEmail } from "../../lib/email.js";
 import { catchAyncError } from "../../lib/catchAsyncError.js";
 import { createTokens, verifyRefreshToken } from "../../lib/token.js";
 import crypto from "crypto";
+import { OAuth2Client } from "google-auth-library";
 
 function getAppUrl() {
   return process.env.APP_URL || `http://localhost:${process.env.PORT}`;
+}
+
+function getGoogleClient() {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const redirectUri = process.env.GOOGLE_CALLBACK_URL;
+
+  if (!clientId || !clientSecret || !redirectUri) {
+    throw new Error("Google OAuth environment variables are not set");
+  }
+
+  return new OAuth2Client({
+    clientId,
+    clientSecret,
+    redirectUri,
+  });
 }
 
 export const registerHandler = catchAyncError(async function (
@@ -183,52 +200,6 @@ export const loginHandler = catchAyncError(async function (
   });
 });
 
-// export const protectHandler = catchAyncError(async function (
-//   req: Request,
-//   res: Response,
-//   next: NextFunction,
-// ) {
-//   let token: string | undefined;
-//   console.log("cokie", req.cookies);
-//   if (
-//     req?.headers?.authorization &&
-//     req?.headers?.authorization.startsWith("Bearer")
-//   ) {
-//     token = req?.headers?.authorization?.split(" ")[1];
-//   }
-
-//   if (!token) {
-//     return next(
-//       new AppError("You are not logged in! Please log in to get access", 401),
-//     );
-//   }
-//   let payload: any;
-//   payload = await promisify(jwt.verify)(
-//     token,
-//     process.env.JWT_ACCESS_SECRET as string,
-//   );
-//   // try {
-//   // } catch (error) {
-//   //   console.log("error", error.message);
-//   //   await refreshTokenHandler;
-//   // }
-
-//   console.log("decoed", payload);
-
-//   const { sub, tokenVersion, iat, exp } = payload;
-
-//   const currentUser = await User.findById(sub);
-//   console.log("user", currentUser);
-//   if (!currentUser) {
-//     return next(
-//       new AppError("User belonging to this token no longer exists", 401),
-//     );
-//   }
-
-//   req.user = currentUser;
-//   next();
-// });
-
 export const refreshTokenHandler = catchAyncError(async function (
   req: Request,
   res: Response,
@@ -390,5 +361,107 @@ export const resetPasswordHandler = catchAyncError(async function (
   return res.status(200).json({
     status: "success",
     message: "Password reset successfully",
+  });
+});
+
+export const googleAuthStartHandler = catchAyncError(async function (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const client = getGoogleClient();
+  const url = client.generateAuthUrl({
+    access_type: "offline",
+    prompt: "consent",
+    scope: ["openid", "email", "profile"],
+  });
+  return res.redirect(url);
+});
+
+export const googleAuthCallbackHandler = catchAyncError(async function (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const code = req.query.code as string | undefined;
+
+  if (!code) {
+    return next(new AppError("MIssing code in callback", 400));
+  }
+
+  const client = getGoogleClient();
+
+  const { tokens } = await client.getToken(code);
+
+  if (!tokens.id_token) {
+    return next(new AppError("no google id_token is present", 400));
+  }
+
+  const ticket = await client.verifyIdToken({
+    idToken: tokens.id_token,
+    audience: process.env.GOOGLE_CLIENT_ID!,
+  });
+
+  const payload = ticket.getPayload();
+  const name = payload?.name;
+  const email = payload?.email;
+  const emailVerified = payload?.email_verified;
+
+  if (!email || !emailVerified) {
+    return next(new AppError("google email account is not verified", 400));
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  let user = await User.findOne({ email: normalizedEmail });
+
+  if (!user) {
+    const randomPassword = crypto.randomBytes(16).toString("hex");
+    const passwordHash = crypto
+      .createHash("sha256")
+      .update(randomPassword)
+      .digest("hex");
+    user = await User.create({
+      name,
+      email: normalizedEmail,
+      password: passwordHash,
+      role: "user",
+      isEmailVerfied: true,
+      twoFactorEnabled: false,
+    });
+  } else {
+    if (!user.isEmailVerfied) {
+      user.isEmailVerfied = true;
+      await user.save();
+    }
+  }
+
+  const generateTokens = createTokens(
+    user._id.toString(),
+    user.role,
+    user.tokenVersion,
+  );
+
+  const cookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  } as const;
+
+  res.cookie("refreshToken", generateTokens.refreshToken, cookieOptions);
+
+  return res.status(200).json({
+    status: "success",
+    data: {
+      accessTOken: generateTokens.accessToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isEmailVerfied: user.isEmailVerfied,
+      },
+    },
   });
 });

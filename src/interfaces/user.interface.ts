@@ -12,6 +12,8 @@ export interface IUser {
   passwordChangedAt?: Date | undefined;
   resetPasswordToken?: string | undefined;
   resetPasswordExpires?: Date | undefined;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface IUserDocument extends IUser, Document {
