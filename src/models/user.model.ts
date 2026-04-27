@@ -36,7 +36,7 @@ const userSchema = new mongoose.Schema(
       default: false,
     },
     twoFactorSecret: {
-      type: Boolean,
+      type: String,
       default: undefined,
     },
     tokenVersion: {

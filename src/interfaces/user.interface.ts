@@ -7,7 +7,7 @@ export interface IUser {
   isEmailVerfied: boolean;
   password: string;
   twoFactorEnabled: boolean;
-  twoFactorSecret?: boolean;
+  twoFactorSecret?: string;
   tokenVersion: number;
   passwordChangedAt?: Date | undefined;
   resetPasswordToken?: string | undefined;

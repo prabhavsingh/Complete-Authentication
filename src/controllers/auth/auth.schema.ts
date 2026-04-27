@@ -14,6 +14,7 @@ export const registerSchema = z
 export const loginSchema = z.object({
   email: z.email(),
   password: z.string().min(8),
+  twoFactorCode: z.string().optional(),
 });
 
 export const forgotPasswordSchema = z.object({

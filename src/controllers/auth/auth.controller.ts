@@ -14,6 +14,7 @@ import { catchAyncError } from "../../lib/catchAsyncError.js";
 import { createTokens, verifyRefreshToken } from "../../lib/token.js";
 import crypto from "crypto";
 import { OAuth2Client } from "google-auth-library";
+import { generateSecret, generateURI, verify } from "otplib";
 
 function getAppUrl() {
   return process.env.APP_URL || `http://localhost:${process.env.PORT}`;
@@ -150,7 +151,7 @@ export const loginHandler = catchAyncError(async function (
     );
   }
 
-  const { email, password } = result.data;
+  const { email, password, twoFactorCode } = result.data;
 
   const normalizedEmail = email.toLowerCase().trim();
 
@@ -168,6 +169,25 @@ export const loginHandler = catchAyncError(async function (
   //     message: "Please verify your email before login",
   //   });
   // }
+
+  if (user.twoFactorEnabled) {
+    if (!twoFactorCode || typeof twoFactorCode !== "string") {
+      return next(new AppError("Two Factor code is required", 400));
+    }
+    if (!user.twoFactorSecret) {
+      return next(new AppError("Two factor misconfig for this account", 400));
+    }
+
+    //verify the code using otplib
+    const { valid } = await verify({
+      token: twoFactorCode,
+      secret: user.twoFactorSecret,
+    });
+
+    if (!valid) {
+      return next(new AppError("invalid two factor code", 400));
+    }
+  }
 
   const tokens = createTokens(
     user._id.toString(),
@@ -463,5 +483,85 @@ export const googleAuthCallbackHandler = catchAyncError(async function (
         isEmailVerfied: user.isEmailVerfied,
       },
     },
+  });
+});
+
+export const twoFASetupHandler = catchAyncError(async function (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const authReq = req as any;
+  const authUser = authReq.user;
+
+  if (!authUser) {
+    return next(new AppError("Not Authenticated", 401));
+  }
+
+  const user = await User.findById(authUser.id);
+  if (!user) {
+    return next(new AppError("User not found", 404));
+  }
+
+  const secret = generateSecret();
+  const issuer = "NodeAuthApp";
+  const otpAuthUri = generateURI({
+    issuer,
+    label: user.email,
+    secret,
+  });
+
+  user.twoFactorSecret = secret;
+  user.twoFactorEnabled = false;
+
+  await user.save();
+  return res.status(200).json({
+    status: "success",
+    message: "2FA setup is done",
+    data: {
+      otpAuthUri,
+      secret,
+    },
+  });
+});
+
+export const twoFAVerifyHandler = catchAyncError(async function (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const authReq = req as any;
+  const authUser = authReq.user;
+
+  if (!authUser) {
+    return next(new AppError("Not Authenticated", 401));
+  }
+
+  const { code } = req.body as { code?: string };
+  if (!code) {
+    return next(new AppError("two factor code is needed", 404));
+  }
+
+  const user = await User.findById(authUser.id);
+  if (!user) {
+    return next(new AppError("User not found", 404));
+  }
+
+  if (!user.twoFactorSecret) {
+    return next(new AppError("You don't have 2FA setup yet.", 400));
+  }
+
+  const { valid } = await verify({ token: code, secret: user.twoFactorSecret });
+
+  if (!valid) {
+    return next(new AppError("invalid two factor code", 400));
+  }
+  user.twoFactorEnabled = true;
+
+  await user.save();
+  return res.status(200).json({
+    status: "success",
+    message: "2FA enabled successfully",
+    twoFactorEnabled: true,
   });
 });
